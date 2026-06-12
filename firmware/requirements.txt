@@ -1,0 +1,9 @@
+# CircuitPython libraries for the Console10 Slider firmware.
+# Install onto the BOARD (not your PC) with circup -- https://github.com/adafruit/circup
+#
+#   circup install adafruit_seesaw
+#
+# Core modules used are built into the CircuitPython firmware (no install needed):
+#   board, usb_cdc, json, time
+
+adafruit_seesaw

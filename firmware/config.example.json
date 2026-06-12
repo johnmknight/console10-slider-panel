@@ -1,0 +1,12 @@
+{
+  "channel": "data",
+  "i2c_addr": "0x30",
+  "analog_pin": 18,
+  "adc_max": 1023,
+  "invert": false,
+  "smoothing": 0.3,
+  "deadband": 4,
+  "rate_limit": 0.03,
+  "heartbeat": 5.0,
+  "debug": true
+}

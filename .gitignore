@@ -1,0 +1,16 @@
+# Live, per-unit firmware config (carries the board's actual settings).
+firmware/config.json
+
+# Host secrets / local config
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
