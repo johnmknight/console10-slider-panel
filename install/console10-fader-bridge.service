@@ -1,0 +1,17 @@
+[Unit]
+Description=Knight Home Tech fader -> MQTT / Home Assistant bridge
+Documentation=https://github.com/johnmknight/console10-slider-panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# __REPO__ and __USER__ are filled in by install/install.sh.
+User=__USER__
+WorkingDirectory=__REPO__
+ExecStart=__REPO__/.venv/bin/python __REPO__/host/fader_mqtt_bridge.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

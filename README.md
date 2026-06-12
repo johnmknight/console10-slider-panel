@@ -1,117 +1,137 @@
 # console10-slider-panel
 
-A **STEMMA QT slide-potentiometer** control for a [Console10](../Console10)
-mini-rack panel, on an **Adafruit QT Py RP2040**. The board reads the slider over
-I²C and streams its value over **USB serial**; a host **MQTT bridge** republishes
-it to the homelab broker. The input-side sibling of
-[`console10-oled-panel`](../console10-oled-panel).
+**STEMMA QT slide-potentiometer** controls on **Adafruit QT Py RP2040** boards,
+bridged to **MQTT + Home Assistant**. Each board reads its slider over I²C and
+streams the value over **USB serial**; a host **bridge** turns every connected
+board into a read-only Home Assistant **sensor** via MQTT Discovery. The
+input-side sibling of [`console10-oled-panel`](../console10-oled-panel).
 
-> **Why a host bridge, not WiFi:** the RP2040 has **no WiFi radio**, so it can't
-> reach the MQTT broker itself. It stays a dumb USB input device; the host
-> publishes. (A QT Py *ESP32-S3* could publish natively with `adafruit_minimqtt`
-> — that's the smarttoolbox pattern — if you'd rather drop the host hop later.)
+> **Why a host bridge, not WiFi:** the RP2040 has **no radio**, so it can't reach
+> MQTT itself. The board stays a dumb USB input device that announces a stable
+> per-board id; the host bridge does all MQTT/HA work. (A QT Py *ESP32-S3* could
+> publish natively with `adafruit_minimqtt` — that's the smarttoolbox pattern —
+> if you'd rather drop the host hop later.)
 
-**Status:** scaffolded — pending on-hardware bring-up.
+**Status:** working on hardware (CircuitPython 10.2.1) and published. Now with
+**multiple-device support** and **Home Assistant MQTT Discovery** — confirmed
+live in HA as a read-only `%` sensor.
 
----
+## How it works
+
+```
+[slider]--I2C-->[QT Py RP2040]--USB serial-->[host bridge]--MQTT-->[broker]-->[Home Assistant]
+                  emits id+value           per-device identity,
+                                           discovery, availability
+```
+
+- **Firmware** emits its RP2040 chip uid (6 hex, e.g. `a1b2c3`) with every value.
+- **Host bridge** (`host/fader_mqtt_bridge.py`) auto-discovers all plugged faders;
+  per device it derives a stable identity, publishes a retained HA Discovery
+  config (read-only `%` **sensor** — *not* a number, the fader is the source of
+  truth), tracks availability with an MQTT Last Will, and publishes the integer
+  position 0–100 on change. Plug another fader in and it appears on the next rescan.
+
+Full topic/identity rules: [`docs/HA_INTEGRATION.md`](docs/HA_INTEGRATION.md).
+Wire + MQTT formats: [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 ## Hardware
 
 | Part | Notes |
 |------|-------|
-| Adafruit **QT Py RP2040** | RP2040, STEMMA QT port, USB-C. No wireless. |
+| Adafruit **QT Py RP2040** | RP2040, STEMMA QT port, USB-C. No wireless. Stable chip uid → device id. |
 | Adafruit **STEMMA QT Slide Potentiometer** (non-NeoPixel) | seesaw (ATtiny) over I²C, addr `0x30`, wiper on seesaw analog pin 18 |
 | STEMMA QT — STEMMA QT cable | Plug-and-play; no soldering |
 
-The slide pot is **not** a raw analog pot — an onboard seesaw chip reads the
-wiper and exposes it over I²C, so the QT Py reads it with `adafruit_seesaw`
-(`Seesaw(i2c, 0x30)` → `AnalogInput(ss, 18)`), no ADC pin wiring.
+The slide pot is **not** a raw analog pot — an ATtiny ("seesaw") reads the wiper
+and exposes it over I²C, so the QT Py reads it with `adafruit_seesaw`
+(`Seesaw(i2c, 0x30)` → `AnalogInput(ss, 18)`).
 
----
+## Quick start
 
-## Bring-up
+### 1. Flash a board
 
-1. **Flash CircuitPython** onto the QT Py RP2040 (tested on 10.2.1) from
-   <https://circuitpython.org/board/adafruit_qtpy_rp2040/>. In bootloader mode
-   it's an `RPI-RP2` drive — copy the `.uf2` to it; it reboots as `CIRCUITPY`.
-2. **Install the library** with [circup](https://github.com/adafruit/circup):
-   ```sh
-   circup install adafruit_seesaw
-   ```
-3. **Copy the firmware** — copy `firmware/*.py` to the root of `CIRCUITPY`
-   (`boot.py`, `code.py`, `settings.py`, `slider.py`). Optionally
-   `config.json` (copy `config.example.json` → `config.json`); defaults work.
-4. **Power-cycle the board** so `boot.py` creates the dedicated USB **data**
-   serial port. After this the board exposes two serial ports (console + data);
-   read the **data** one.
+Flash CircuitPython first (drag the `.uf2` onto the `RPI-RP2` bootloader drive),
+then:
 
----
-
-## Run the MQTT bridge (host)
-
-Install deps once:
 ```sh
-pip install -r host/requirements.txt
+pip install circup            # once, recommended (auto-installs the I2C lib)
+python tools/flash_firmware.py
 ```
 
-Find the port (data channel = higher-numbered one), then run the bridge:
+It finds the `CIRCUITPY` drive, copies the firmware, installs `adafruit_seesaw`,
+and reminds you to **power-cycle** (the dedicated USB data channel only appears
+after a hard reset). Repeat per board.
+
+### 2. Set up the host bridge
+
+The bridge runs wherever the faders plug in. Pick your platform:
+
 ```sh
-python host/slider_mqtt_bridge.py --list
-python host/slider_mqtt_bridge.py --verbose        # auto-detect port, lab broker
-python host/slider_mqtt_bridge.py --port COM10 --broker 192.168.4.148 --topic console10/slider/value
+# Linux / Raspberry Pi  — venv + deps + .env + systemd service (auto-start on boot)
+./install/install.sh
+
+# Windows — venv + deps + .env + a logon Scheduled Task
+./install/install.ps1
 ```
 
-Defaults: broker `192.168.4.148:1883` (appserv1), topic `console10/slider/value`,
-retained, QoS 0. Override via flags or `host/.env` (copy `.env.example`).
+Both seed `host/.env` from the example — set your **Home Assistant** broker +
+auth there (see step 3). Then the bridge auto-detects every plugged-in fader and
+publishes. Add `--no-service`
+/ `-NoService` to skip the autostart and run manually instead:
 
-Verify the value lands on the broker:
 ```sh
-mosquitto_sub -h 192.168.4.148 -t console10/slider/value -v
+./install/run_bridge.sh            # or  ./install/run_bridge.ps1
+./install/run_bridge.sh --list     # show connected faders + their topics
 ```
 
-Or consume the slider directly (no MQTT) from your own code:
-```python
-from console10_slider import Console10Slider, pick_data_port
+### 3. Home Assistant
 
-with Console10Slider(pick_data_port()) as slider:
-    for r in slider.readings():
-        print(r["value"], r["pct"], r["raw"])
+**Point the bridge at HA's own MQTT broker.** Discovery only reaches HA via the
+broker its MQTT integration uses (Settings → Devices & Services → MQTT) — that's
+often a *different* broker from your other lab devices, and HA's Mosquitto add-on
+usually needs auth. Set `MQTT_BROKER` + `MQTT_USERNAME`/`MQTT_PASSWORD` in
+`host/.env`.
+
+With that, each fader auto-appears as a **device** ("Knight Home Tech Fader")
+with a read-only **Position** `%` sensor — no YAML. Rename in HA as you like.
+Verify on that broker:
+
+```sh
+mosquitto_sub -h <ha-broker> -t 'knighthometech/#' -v          # state + status
+mosquitto_sub -h <ha-broker> -t 'homeassistant/sensor/#' -v    # retained discovery
 ```
-
-The full wire/MQTT formats are in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
-
----
 
 ## Layout
 
 ```
 firmware/   CircuitPython for the QT Py RP2040 (copy to CIRCUITPY)
   boot.py            enables the dedicated USB data serial channel
-  code.py            read slider -> emit JSON value over serial (on change + heartbeat)
+  code.py            read slider + chip uid -> emit JSON over serial
   settings.py        loads /config.json (optional; defaults included)
   slider.py          seesaw slide-pot read + smoothing/invert/deadband
   config.example.json
-  requirements.txt   circup library list (adafruit_seesaw)
-host/       Host-side bridge (runs on the Pi/PC in the rack)
-  console10_slider.py    reusable serial reader (yields {value,pct,raw})
-  slider_mqtt_bridge.py  reads serial -> publishes to MQTT (paho-mqtt)
-  .env.example           broker/topic config
-  requirements.txt       pyserial, paho-mqtt
+  diag_pin_scan.py   one-off seesaw analog-pin scanner
+host/       Host-side bridge + reader
+  fader_mqtt_bridge.py   multi-device MQTT + Home Assistant Discovery bridge  <- main
+  ha_fader.py            identity + discovery-payload helpers (per the spec)
+  console10_slider.py    serial reader + multi-board data-port discovery
+  slider_monitor.py      MQTT subscriber test app (live per-fader bars)
+  slider_mqtt_bridge.py  deprecated shim -> fader_mqtt_bridge.py
+  .env.example           broker / namespace / name config
+tools/
+  flash_firmware.py      copy firmware to CIRCUITPY + circup install
+install/
+  install.sh / install.ps1            cross-platform host setup
+  run_bridge.sh / run_bridge.ps1      venv-activating runners
+  console10-fader-bridge.service      systemd unit template
 docs/
+  HA_INTEGRATION.md      Home Assistant identity/discovery/availability spec
   PROTOCOL.md            USB-serial + MQTT formats
 ```
 
----
+## Follow-ups
 
-## Console10 integration
-
-Meant to live in a Console10 slot as a physical control. Open follow-ups:
-
-- **Faceplate** — a Console10 front plate with a cutout for the slide pot.
-- **Consumers** — wire `console10/slider/value` to a real target: WLED brightness
-  (the Lights app's Gledopto), a Home Assistant `input_number`/light, or the
-  `console10-oled-panel`'s brightness. Each is a thin MQTT subscriber.
-- **HA MQTT discovery** — have the bridge publish a discovery config so the
-  slider auto-appears as a sensor in Home Assistant.
-- **Native MQTT (no host)** — an ESP32-S3 variant that runs `adafruit_minimqtt`
-  and publishes directly, dropping the host bridge.
+- **Faceplate** — carried by the Console10 DSKY panel (`../Console10`).
+- **Native MQTT (no host)** — an ESP32-S3 variant running `adafruit_minimqtt`.
+- **Other consumers** — `knighthometech/+/position` can also drive WLED
+  brightness, a HA `input_number`, etc. as thin subscribers.

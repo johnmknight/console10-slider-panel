@@ -27,8 +27,22 @@
 import time
 import json
 import usb_cdc
+import microcontroller
 import settings
 import slider
+
+FW_VERSION = "1.0"
+
+
+def _device_id():
+    # Stable per-board id from the RP2040 factory-unique chip id (last 3 bytes
+    # -> 6 hex), e.g. "a1b2c3". The host turns this into the per-device Home
+    # Assistant identity + MQTT topics, so two faders on one host never collide.
+    uid = microcontroller.cpu.uid
+    return "".join("{:02x}".format(b) for b in uid[-3:])
+
+
+DEV_ID = _device_id()
 
 print("\n=== Console10 Slider v0.1 ===")
 cfg = settings.load()
@@ -52,13 +66,23 @@ _rate = cfg.get("rate_limit", 0.03)
 _heartbeat = cfg.get("heartbeat", 5.0)
 
 
-def emit(raw, val):
-    line = json.dumps({"value": round(val, 3), "pct": int(round(val * 100)), "raw": raw}) + "\n"
+def _write(obj):
     try:
-        _serial.write(line.encode("utf-8"))
+        _serial.write((json.dumps(obj) + "\n").encode("utf-8"))
     except Exception as e:
         print("[emit] error: {}".format(e))
 
+
+def emit(raw, val):
+    # Every line carries the device id so the host can attribute it to the right
+    # fader without depending on which serial port it came in on.
+    _write({"id": DEV_ID, "value": round(val, 3), "pct": int(round(val * 100)), "raw": raw})
+
+
+# Announce identity once at boot so a late-starting host learns this board's id
+# immediately (it's also included in every value/heartbeat line above).
+_write({"hello": 1, "id": DEV_ID, "fw": FW_VERSION})
+print("[id] device {} (fw {})".format(DEV_ID, FW_VERSION))
 
 _last_raw = -9999
 _last_emit = 0.0

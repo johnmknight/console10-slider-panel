@@ -1,54 +1,77 @@
-# Console10 Slider — data formats
+# Fader — data formats
 
 Two hops: the board emits over **USB serial**, and the host bridge republishes to
-**MQTT**.
+**MQTT** (and Home Assistant). For the full HA discovery/identity rules see
+[`HA_INTEGRATION.md`](HA_INTEGRATION.md).
 
 ## 1. USB serial (board → host)
 
 The firmware writes **one JSON object per line** (`\n`-terminated, UTF-8) to the
-USB **data** channel:
+USB **data** channel. Every line carries the board's stable device `id` so the
+host can attribute it to the right fader regardless of which port it came in on:
 
 ```json
-{"value": 0.42, "pct": 42, "raw": 430}
+{"id": "a1b2c3", "value": 0.42, "pct": 42, "raw": 430}
 ```
 
 | Field | Range | Meaning |
 |-------|-------|---------|
+| `id` | 6 hex | stable per-board id (RP2040 chip uid, last 3 bytes) |
 | `value` | 0.0–1.0 | normalized slider position |
-| `pct` | 0–100 | integer percent (convenience for HA / dashboards) |
+| `pct` | 0–100 | integer percent (this is what HA gets) |
 | `raw` | 0–`adc_max` | raw seesaw ADC count (default `adc_max` = 1023) |
 
-**When it emits:** on change past a `deadband` (anti-jitter), rate-limited to
+At boot the firmware also emits a one-time identity line so a late-starting host
+learns the id immediately:
+
+```json
+{"hello": 1, "id": "a1b2c3", "fw": "1.0"}
+```
+
+**When values emit:** on change past a `deadband` (anti-jitter), rate-limited to
 ~30/s, **plus** a `heartbeat` re-emit every few seconds even when idle — so a
-late host start and a retained MQTT topic always carry a fresh value. Smoothing
-(EMA), invert, deadband, and heartbeat are all set in `config.json` (see
+late host start and retained MQTT topics always carry a fresh value. Smoothing
+(EMA), invert, deadband, and heartbeat are set in `config.json` (see
 `firmware/config.example.json`).
 
 **Channels:** the firmware emits on the dedicated USB **data** port (needs
 `boot.py` + a power-cycle). Without it, it falls back to the **console** port,
 where its own log output shares the wire — the host reader skips non-JSON lines.
+For multi-board hosts the bridge identifies each board's data channel by probing
+for this JSON (see `host/console10_slider.py:discover_faders`).
 
-## 2. MQTT (host bridge → broker)
+## 2. MQTT (host bridge → broker / Home Assistant)
 
-`slider_mqtt_bridge.py` publishes each reading to:
+`host/fader_mqtt_bridge.py` derives a per-device identity from `id` and publishes
+on three topics (device id `a1b2c3` shown):
 
 ```
-console10/slider/value
+knighthometech/fader_a1b2c3/position                              # state: integer 0..100
+knighthometech/fader_a1b2c3/status                               # availability: online|offline
+homeassistant/sensor/knighthometech_fader_a1b2c3_position/config # retained HA discovery
 ```
 
-- **Payload:** the same JSON object by default, or a bare `0.0–1.0` number with
-  `--scalar`.
-- **Retain:** `True` (current-state topic — late subscribers get the last
-  position immediately). Disable with `--no-retain`.
-- **QoS:** 0 (fine on the LAN); raise with `--qos`.
-- **Broker:** defaults to the lab broker `192.168.4.148:1883` (appserv1),
-  anonymous. Override via `MQTT_BROKER` / `MQTT_PORT` / `SLIDER_TOPIC` env or the
-  CLI flags.
+| Topic | Payload | Retain |
+|-------|---------|--------|
+| `…/position` | bare integer `0`–`100`, on change | yes (default; `--no-position-retain` / `POSITION_RETAIN=0` to disable) |
+| `…/status` | `online` / `offline` (offline via LWT) | yes |
+| `homeassistant/sensor/…/config` | discovery JSON (see HA_INTEGRATION.md) | yes |
 
-Topic naming follows the homelab convention `<source>/<subsystem>/<signal>`
-(all lowercase). Example consumer (paho-mqtt):
+- **Broker:** must be the one Home Assistant's MQTT integration uses (often HA's
+  authenticated Mosquitto add-on, separate from a shared lab broker). Set in
+  `host/.env` (`MQTT_BROKER`/`MQTT_PORT`/`MQTT_USERNAME`/`MQTT_PASSWORD`) or CLI
+  flags; defaults to `192.168.4.51:1883`.
+- **Namespace:** `MQTT_PREFIX` (default `knighthometech`) and
+  `HA_DISCOVERY_PREFIX` (default `homeassistant`).
+
+Example consumer (paho-mqtt) — read every fader's live value:
 
 ```python
-client.subscribe("console10/slider/value")
-# msg.payload -> b'{"value":0.42,"pct":42,"raw":430}'
+client.subscribe("knighthometech/+/position")
+# msg.topic   -> 'knighthometech/fader_a1b2c3/position'
+# msg.payload -> b'42'
 ```
+
+Migration note: this replaces the old single-device topic
+`console10/slider/value` (JSON). `host/slider_mqtt_bridge.py` is now a thin shim
+that forwards to `fader_mqtt_bridge.py`.

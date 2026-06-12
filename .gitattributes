@@ -1,0 +1,7 @@
+# Keep shell scripts and the systemd unit LF so they run on Linux/Pi regardless
+# of the host that committed them (Windows autocrlf would otherwise break them).
+*.sh        text eol=lf
+*.service   text eol=lf
+
+# PowerShell scripts are happiest as CRLF on Windows.
+*.ps1       text eol=crlf
